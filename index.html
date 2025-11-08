@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SD-JWT Decoder with Verification</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        // Import jose library for JWT verification
+        import * as jose from 'https://cdn.jsdelivr.net/npm/jose@5.2.0/+esm';
+        window.jose = jose;
+    </script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Lucide React icons as simple SVG components
+        const AlertCircle = ({ className, size = 24 }) => (
+            <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="8" x2="12" y2="12"></line>
+                <line x1="12" y1="16" x2="12.01" y2="16"></line>
+            </svg>
+        );
+
+        const CheckCircle = ({ className, size = 24 }) => (
+            <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+        );
+
+        const Copy = ({ className, size = 24 }) => (
+            <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+        );
+
+        const Info = ({ className, size = 24 }) => (
+            <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+        );
+
+        const XCircle = ({ className, size = 24 }) => (
+            <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="15" y1="9" x2="9" y2="15"></line>
+                <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+        );
+
+        const Shield = ({ className, size = 24 }) => (
+            <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+        );
+
+        const SDJWTDecoder = () => {
+            const [input, setInput] = useState('');
+            const [publicKeyInput, setPublicKeyInput] = useState('');
+            const [decoded, setDecoded] = useState(null);
+            const [error, setError] = useState('');
+            const [copied, setCopied] = useState(false);
+            const [verificationStatus, setVerificationStatus] = useState(null);
+            const [verifying, setVerifying] = useState(false);
+
+            const base64UrlDecode = (str) => {
+                let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+                while (base64.length % 4) {
+                    base64 += '=';
+                }
+                try {
+                    return JSON.parse(atob(base64));
+                } catch (e) {
+                    return atob(base64);
+                }
+            };
+
+            const verifySignature = async (jwtString, publicKeyJwk) => {
+                try {
+                    setVerifying(true);
+                    setVerificationStatus(null);
+
+                    if (!window.jose) {
+                        throw new Error('JOSE library not loaded yet. Please wait and try again.');
+                    }
+
+                    // Parse the JWT header to get the algorithm
+                    const jwtParts = jwtString.split('.');
+                    const headerBase64 = jwtParts[0];
+                    const header = base64UrlDecode(headerBase64);
+                    const algorithm = header.alg;
+
+                    // Parse the public key (remove any newlines first)
+                    let jwk;
+                    if (typeof publicKeyJwk === 'string') {
+                        const cleanedKey = publicKeyJwk.replace(/[\r\n]/g, '');
+                        jwk = JSON.parse(cleanedKey);
+                    } else {
+                        jwk = publicKeyJwk;
+                    }
+
+                    // Import the public key
+                    const publicKey = await window.jose.importJWK(jwk, algorithm);
+
+                    // Verify the JWT with explicit algorithm
+                    const { payload, protectedHeader } = await window.jose.jwtVerify(jwtString, publicKey, {
+                        algorithms: [algorithm]
+                    });
+
+                    setVerificationStatus({
+                        success: true,
+                        message: 'Verification succeeded',
+                        algorithm: protectedHeader.alg
+                    });
+
+                } catch (err) {
+                    console.error('Verification error:', err);
+                    setVerificationStatus({
+                        success: false,
+                        message: 'Verification failed',
+                        error: err.message
+                    });
+                } finally {
+                    setVerifying(false);
+                }
+            };
+
+            const decodeSDJWT = async (sdJwt) => {
+                try {
+                    setError('');
+                    setVerificationStatus(null);
+                    
+                    // Remove all newlines and whitespace to handle multi-line input from spec documents
+                    const cleanedSdJwt = sdJwt.replace(/[\r\n\s]/g, '');
+                    
+                    const parts = cleanedSdJwt.trim().split('~');
+                    
+                    if (parts.length < 1) {
+                        throw new Error('Invalid SD-JWT format');
+                    }
+
+                    const jwtString = parts[0];
+                    const jwtParts = jwtString.split('.');
+                    if (jwtParts.length !== 3) {
+                        throw new Error('Invalid JWT format');
+                    }
+
+                    const header = base64UrlDecode(jwtParts[0]);
+                    const payload = base64UrlDecode(jwtParts[1]);
+                    const signature = jwtParts[2];
+
+                    const disclosures = [];
+                    let kbJwt = null;
+
+                    for (let i = 1; i < parts.length; i++) {
+                        const part = parts[i].trim();
+                        if (!part) continue;
+
+                        if (part.includes('.') && part.split('.').length === 3) {
+                            const kbParts = part.split('.');
+                            kbJwt = {
+                                header: base64UrlDecode(kbParts[0]),
+                                payload: base64UrlDecode(kbParts[1]),
+                                signature: kbParts[2]
+                            };
+                        } else {
+                            try {
+                                const disclosure = base64UrlDecode(part);
+                                disclosures.push({
+                                    raw: part,
+                                    decoded: disclosure
+                                });
+                            } catch (e) {
+                                console.warn('Failed to decode disclosure:', part);
+                            }
+                        }
+                    }
+
+                    const reconstructedClaims = JSON.parse(JSON.stringify(payload));
+                    
+                    disclosures.forEach(disc => {
+                        if (Array.isArray(disc.decoded) && disc.decoded.length >= 2) {
+                            const [salt, claimName, claimValue] = disc.decoded;
+                            if (claimName && claimValue !== undefined) {
+                                reconstructedClaims[claimName] = claimValue;
+                            }
+                        }
+                    });
+
+                    const cleanedClaims = { ...reconstructedClaims };
+                    delete cleanedClaims._sd;
+                    delete cleanedClaims._sd_alg;
+
+                    setDecoded({
+                        jwt: {
+                            header,
+                            payload,
+                            signature
+                        },
+                        jwtString,
+                        disclosures,
+                        kbJwt,
+                        reconstructedClaims: cleanedClaims,
+                        originalPayload: payload
+                    });
+
+                    // Perform verification if public key is provided
+                    if (publicKeyInput.trim()) {
+                        await verifySignature(jwtString, publicKeyInput);
+                    }
+
+                } catch (err) {
+                    setError(err.message);
+                    setDecoded(null);
+                }
+            };
+
+            const handleDecode = () => {
+                if (!input.trim()) {
+                    setError('Please enter an SD-JWT');
+                    return;
+                }
+                decodeSDJWT(input);
+            };
+
+            const handleVerify = async () => {
+                if (!decoded) {
+                    setError('Please decode an SD-JWT first');
+                    return;
+                }
+                if (!publicKeyInput.trim()) {
+                    setError('Please provide a public key');
+                    return;
+                }
+                await verifySignature(decoded.jwtString, publicKeyInput);
+            };
+
+            const copyToClipboard = (text) => {
+                navigator.clipboard.writeText(JSON.stringify(text, null, 2));
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            };
+
+            // Store example with newlines as in the spec, will be cleaned when loaded
+            const exampleSDJWT = `eyJhbGciOiAiRVMyNTYiLCAidHlwIjogImV4YW1wbGUrc2Qtand0In0.eyJAY29udGV4dCI6IFsiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvdjEiLCAiaHR0cHM6Ly93M2lkLm9yZy92YWNjaW5hdGlvbi92MSJdLCAidHlwZSI6IFsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCAiVmFjY2luYXRpb25DZXJ0aWZpY2F0ZSJdLCAiaXNzdWVyIjogImh0dHBzOi8vZXhhbXBsZS5jb20vaXNzdWVyIiwgImlzc3VhbmNlRGF0ZSI6ICIyMDIzLTAyLTA5VDExOjAxOjU5WiIsICJleHBpcmF0aW9uRGF0ZSI6ICIyMDI4LTAyLTA4VDExOjAxOjU5WiIsICJuYW1lIjogIkNPVklELTE5IFZhY2NpbmF0aW9uIENlcnRpZmljYXRlIiwgImRlc2NyaXB0aW9uIjogIkNPVklELTE5IFZhY2NpbmF0aW9uIENlcnRpZmljYXRlIiwgImNyZWRlbnRpYWxTdWJqZWN0IjogeyJfc2QiOiBbIjFWX0stOGxEUThpRlhCRlhiWlk5ZWhxUjRIYWJXQ2k1VDB5Ykl6WlBld3ciLCAiSnpqTGd0UDI5ZFAtQjN0ZDEyUDY3NGdGbUsyenk4MUhNdEJnZjZDSk5XZyIsICJSMmZHYmZBMDdaX1lsa3FtTlp5bWExeHl5eDFYc3RJaVM2QjFZYmwySlo0IiwgIlRDbXpybDdLMmdldl9kdTdwY01JeXpSTEhwLVllZy1GbF9jeHRyVXZQeGciLCAiVjdrSkJMSzc4VG1WRE9tcmZKN1p1VVBIdUtfMmNjN3laUmE0cVYxdHh3TSIsICJiMGVVc3ZHUC1PRERkRm9ZNE5semxYYzN0RHNsV0p0Q0pGNzVOdzhPal9nIiwgInpKS19lU01YandNOGRYbU1aTG5JOEZHTTA4ekozX3ViR2VFTUotNVRCeTAiXSwgInZhY2NpbmUiOiB7Il9zZCI6IFsiMWNGNWhMd2toTU5JYXFmV0pyWEk3Tk1XZWRMLTlmNlkyUEE1MnlQalNaSSIsICJIaXk2V1d1ZUxENWJuMTYyOTh0UHY3R1hobWxkTURPVG5CaS1DWmJwaE5vIiwgIkxiMDI3cTY5MWpYWGwtakM3M3ZpOGViT2o5c214M0MtX29nN2dBNFRCUUUiXSwgInR5cGUiOiAiVmFjY2luZSJ9LCAicmVjaXBpZW50IjogeyJfc2QiOiBbIjFsU1FCTlkyNHEwVGg2T0d6dGhxLTctNGw2Y0FheHJZWE9HWnBlV19sbkEiLCAiM256THE4MU0yb04wNndkdjFzaEh2T0VKVnhaNUtMbWREa0hFREpBQldFSSIsICJQbjFzV2kwNkc0TEpybm4tX1JUMFJiTV9IVGR4blBKUXVYMmZ6V3ZfSk9VIiwgImxGOXV6ZHN3N0hwbEdMYzcxNFRyNFdPN01HSnphN3R0N1FGbGVDWDRJdHciXSwgInR5cGUiOiAiVmFjY2luZVJlY2lwaWVudCJ9LCAidHlwZSI6ICJWYWNjaW5hdGlvbkV2ZW50In0sICJfc2RfYWxnIjogInNoYS0yNTYiLCAiY25mIjogeyJqd2siOiB7Imt0eSI6ICJFQyIsICJjcnYiOiAiUC0yNTYiLCAieCI6ICJUQ0FFUjE5WnZ1M09IRjRqNFc0dmZTVm9ISVAxSUxpbERsczd2Q2VHZW1jIiwgInkiOiAiWnhqaVdXYlpNUUdIVldLVlE0aGJTSWlyc1ZmdWVjQ0U2dDRqVDlGMkhaUSJ9fX0.OZomvwO8iw4db89MYCeeomBVStXkT6u7G7FkicPWZnd2_hGgr0l_u1NHgPVocuOt-m32Uu6kwtPmYFxKk0AOeA~WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImF0Y0NvZGUiLCAiSjA3QlgwMyJd~WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgIm1lZGljaW5hbFByb2R1Y3ROYW1lIiwgIkNPVklELTE5IFZhY2NpbmUgTW9kZXJuYSJd~WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgIm1hcmtldGluZ0F1dGhvcml6YXRpb25Ib2xkZXIiLCAiTW9kZXJuYSBCaW90ZWNoIl0~WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgIm5leHRWYWNjaW5hdGlvbkRhdGUiLCAiMjAyMS0wOC0xNlQxMzo0MDoxMloiXQ~WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgImNvdW50cnlPZlZhY2NpbmF0aW9uIiwgIkdFIl0~WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImRhdGVPZlZhY2NpbmF0aW9uIiwgIjIwMjEtMDYtMjNUMTM6NDA6MTJaIl0~WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgIm9yZGVyIiwgIjMvMyJd~WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgImdlbmRlciIsICJGZW1hbGUiXQ~WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgImJpcnRoRGF0ZSIsICIxOTYxLTA4LTE3Il0~WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgImdpdmVuTmFtZSIsICJNYXJpb24iXQ~WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImZhbWlseU5hbWUiLCAiTXVzdGVybWFubiJd~WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgImFkbWluaXN0ZXJpbmdDZW50cmUiLCAiUHJheGlzIFNvbW1lcmdhcnRlbiJd~WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgImJhdGNoTnVtYmVyIiwgIjE2MjYzODI3MzYiXQ~WyJIYlE0WDhzclZXM1FEeG5JSmRxeU9BIiwgImhlYWx0aFByb2Zlc3Npb25hbCIsICI4ODMxMTAwMDAwMTUzNzYiXQ~`;
+
+            const examplePublicKey = `{
+  "kty": "EC",
+  "crv": "P-256",
+  "x": "b28d4MwZMjw8-00CG4xfnn9SLMVMM19SlqZpVb_uNtQ",
+  "y": "Xv5zWwuoaTgdS6hV43yI6gBwTnjukmFQQnJ_kCxzqk8"
+}`;
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+                    <div className="max-w-6xl mx-auto">
+                        <div className="bg-white rounded-lg shadow-xl p-8 mb-6">
+                            <div className="flex items-center gap-3 mb-6">
+                                <div className="bg-indigo-600 p-3 rounded-lg">
+                                    <Info className="text-white" size={28} />
+                                </div>
+                                <div>
+                                    <h1 className="text-3xl font-bold text-gray-800">SD-JWT Decoder with Verification</h1>
+                                    <p className="text-gray-600">Decode and verify Selective Disclosure JSON Web Tokens</p>
+                                </div>
+                            </div>
+
+                            <div className="mb-4">
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="block text-sm font-medium text-gray-700">
+                                        SD-JWT Input
+                                    </label>
+                                    <button
+                                        onClick={() => {
+                                            setInput(exampleSDJWT);
+                                            setPublicKeyInput(examplePublicKey);
+                                        }}
+                                        className="text-sm text-indigo-600 hover:text-indigo-800"
+                                    >
+                                        Load Example
+                                    </button>
+                                </div>
+                                <textarea
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    placeholder="Paste your SD-JWT here (format: jwt~disclosure1~disclosure2~...)"
+                                    className="w-full h-32 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm"
+                                />
+                            </div>
+
+                            <div className="mb-4">
+                                <div className="flex justify-between items-center mb-2">
+                                    <label className="block text-sm font-medium text-gray-700">
+                                        Issuer Public Key (JWK format - optional)
+                                    </label>
+                                    <button
+                                        onClick={() => setPublicKeyInput(examplePublicKey)}
+                                        className="text-sm text-indigo-600 hover:text-indigo-800"
+                                    >
+                                        Load Example Key
+                                    </button>
+                                </div>
+                                <textarea
+                                    value={publicKeyInput}
+                                    onChange={(e) => setPublicKeyInput(e.target.value)}
+                                    placeholder='{"kty": "EC", "crv": "P-256", "x": "...", "y": "..."}'
+                                    className="w-full h-24 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm"
+                                />
+                                <p className="text-xs text-gray-500 mt-1">
+                                    Example from IETF OAuth SD-JWT Draft Specification
+                                </p>
+                            </div>
+
+                            <button
+                                onClick={handleDecode}
+                                className="w-full bg-indigo-600 text-white py-3 rounded-lg font-semibold hover:bg-indigo-700 transition-colors mb-2"
+                            >
+                                Decode SD-JWT
+                            </button>
+
+                            {decoded && publicKeyInput.trim() && (
+                                <button
+                                    onClick={handleVerify}
+                                    disabled={verifying}
+                                    className="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 transition-colors disabled:bg-gray-400"
+                                >
+                                    {verifying ? 'Verifying...' : 'Verify Signature'}
+                                </button>
+                            )}
+
+                            {error && (
+                                <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+                                    <AlertCircle className="text-red-500 flex-shrink-0 mt-0.5" size={20} />
+                                    <div>
+                                        <p className="font-semibold text-red-800">Error</p>
+                                        <p className="text-red-600 text-sm">{error}</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {decoded && !publicKeyInput.trim() && (
+                                <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg flex items-start gap-2">
+                                    <AlertCircle className="text-yellow-600 flex-shrink-0 mt-0.5" size={20} />
+                                    <div>
+                                        <p className="font-semibold text-yellow-800">Verification Info</p>
+                                        <p className="text-yellow-700 text-sm">To perform verification, please provide the issuer's public key</p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {verificationStatus && (
+                                <div className={`mt-4 p-4 rounded-lg border-2 flex items-start gap-2 ${
+                                    verificationStatus.success 
+                                        ? 'bg-green-50 border-green-300' 
+                                        : 'bg-red-50 border-red-300'
+                                }`}>
+                                    {verificationStatus.success ? (
+                                        <CheckCircle className="text-green-600 flex-shrink-0 mt-0.5" size={24} />
+                                    ) : (
+                                        <XCircle className="text-red-600 flex-shrink-0 mt-0.5" size={24} />
+                                    )}
+                                    <div className="flex-1">
+                                        <p className={`font-bold text-lg ${
+                                            verificationStatus.success ? 'text-green-800' : 'text-red-800'
+                                        }`}>
+                                            {verificationStatus.message}
+                                        </p>
+                                        {verificationStatus.success && (
+                                            <p className="text-green-700 text-sm mt-1">
+                                                Algorithm: {verificationStatus.algorithm}
+                                            </p>
+                                        )}
+                                        {!verificationStatus.success && verificationStatus.error && (
+                                            <p className="text-red-600 text-sm mt-1">
+                                                {verificationStatus.error}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {decoded && (
+                            <div className="space-y-6">
+                                <div className="bg-white rounded-lg shadow-lg p-6">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                                            <Shield className="text-indigo-600" size={24} />
+                                            JWT Header
+                                        </h2>
+                                        <button
+                                            onClick={() => copyToClipboard(decoded.jwt.header)}
+                                            className="text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                                        >
+                                            <Copy size={18} />
+                                            {copied ? 'Copied!' : 'Copy'}
+                                        </button>
+                                    </div>
+                                    <pre className="bg-gray-50 p-4 rounded-lg overflow-x-auto text-sm">
+                                        {JSON.stringify(decoded.jwt.header, null, 2)}
+                                    </pre>
+                                </div>
+
+                                <div className="bg-white rounded-lg shadow-lg p-6">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h2 className="text-xl font-bold text-gray-800">JWT Payload (Original)</h2>
+                                        <button
+                                            onClick={() => copyToClipboard(decoded.originalPayload)}
+                                            className="text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+                                        >
+                                            <Copy size={18} />
+                                            {copied ? 'Copied!' : 'Copy'}
+                                        </button>
+                                    </div>
+                                    <pre className="bg-gray-50 p-4 rounded-lg overflow-x-auto text-sm">
+                                        {JSON.stringify(decoded.originalPayload, null, 2)}
+                                    </pre>
+                                </div>
+
+                                {decoded.disclosures.length > 0 && (
+                                    <div className="bg-white rounded-lg shadow-lg p-6">
+                                        <h2 className="text-xl font-bold text-gray-800 mb-4">
+                                            Disclosures ({decoded.disclosures.length})
+                                        </h2>
+                                        <div className="space-y-4">
+                                            {decoded.disclosures.map((disc, idx) => (
+                                                <div key={idx} className="border border-gray-200 rounded-lg p-4">
+                                                    <div className="flex justify-between items-start mb-2">
+                                                        <h3 className="font-semibold text-gray-700">Disclosure {idx + 1}</h3>
+                                                        <button
+                                                            onClick={() => copyToClipboard(disc.decoded)}
+                                                            className="text-indigo-600 hover:text-indigo-800 text-sm flex items-center gap-1"
+                                                        >
+                                                            <Copy size={16} />
+                                                        </button>
+                                                    </div>
+                                                    <div className="mb-2">
+                                                        <p className="text-xs text-gray-500 mb-1">Base64URL:</p>
+                                                        <p className="text-xs font-mono bg-gray-50 p-2 rounded break-all">
+                                                            {disc.raw}
+                                                        </p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-xs text-gray-500 mb-1">Decoded:</p>
+                                                        <pre className="text-sm bg-indigo-50 p-3 rounded overflow-x-auto">
+                                                            {JSON.stringify(disc.decoded, null, 2)}
+                                                        </pre>
+                                                    </div>
+                                                    {Array.isArray(disc.decoded) && disc.decoded.length >= 3 && (
+                                                        <div className="mt-2 text-sm text-gray-600">
+                                                            <span className="font-semibold">Claim:</span> {disc.decoded[1]} ={' '}
+                                                            {JSON.stringify(disc.decoded[2])}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg shadow-lg p-6 border-2 border-green-200">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
+                                            <CheckCircle className="text-green-600" size={24} />
+                                            Reconstructed Claims
+                                        </h2>
+                                        <button
+                                            onClick={() => copyToClipboard(decoded.reconstructedClaims)}
+                                            className="text-green-600 hover:text-green-800 flex items-center gap-1"
+                                        >
+                                            <Copy size={18} />
+                                            {copied ? 'Copied!' : 'Copy'}
+                                        </button>
+                                    </div>
+                                    <p className="text-sm text-gray-600 mb-3">
+                                        Complete claims with all disclosures applied
+                                    </p>
+                                    <pre className="bg-white p-4 rounded-lg overflow-x-auto text-sm border border-green-200">
+                                        {JSON.stringify(decoded.reconstructedClaims, null, 2)}
+                                    </pre>
+                                </div>
+
+                                {decoded.kbJwt && (
+                                    <div className="bg-white rounded-lg shadow-lg p-6">
+                                        <h2 className="text-xl font-bold text-gray-800 mb-4">
+                                            Key Binding JWT (KB-JWT)
+                                        </h2>
+                                        <div className="space-y-3">
+                                            <div>
+                                                <h3 className="font-semibold text-gray-700 mb-2">Header</h3>
+                                                <pre className="bg-gray-50 p-3 rounded-lg overflow-x-auto text-sm">
+                                                    {JSON.stringify(decoded.kbJwt.header, null, 2)}
+                                                </pre>
+                                            </div>
+                                            <div>
+                                                <h3 className="font-semibold text-gray-700 mb-2">Payload</h3>
+                                                <pre className="bg-gray-50 p-3 rounded-lg overflow-x-auto text-sm">
+                                                    {JSON.stringify(decoded.kbJwt.payload, null, 2)}
+                                                </pre>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="bg-white rounded-lg shadow-lg p-6">
+                                    <h2 className="text-xl font-bold text-gray-800 mb-4">JWT Signature</h2>
+                                    <p className="font-mono text-sm bg-gray-50 p-4 rounded-lg break-all">
+                                        {decoded.jwt.signature}
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="mt-8 bg-blue-50 rounded-lg p-6 border border-blue-200">
+                            <h3 className="font-semibold text-blue-900 mb-2">About SD-JWT</h3>
+                            <p className="text-sm text-blue-800 mb-3">
+                                Selective Disclosure JWT (SD-JWT) is a specification that extends JSON Web Tokens to enable 
+                                selective disclosure of claims. The format consists of a JWT followed by base64url-encoded 
+                                disclosures separated by tildes (~). Each disclosure reveals specific claims that were hashed 
+                                in the original JWT payload.
+                            </p>
+                            <h3 className="font-semibold text-blue-900 mb-2 mt-4">Signature Verification</h3>
+                            <p className="text-sm text-blue-800 mb-3">
+                                To verify the authenticity of an SD-JWT, provide the issuer's public key in JWK format. 
+                                The verification process checks if the signature was created using the corresponding private key, 
+                                ensuring the token hasn't been tampered with.
+                            </p>
+                            <h3 className="font-semibold text-blue-900 mb-2 mt-4">Example Data</h3>
+                            <p className="text-sm text-blue-800">
+                                The example SD-JWT and public key are from the{' '}
+                                <a 
+                                    href="https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-22.html" 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="underline hover:text-blue-900"
+                                >
+                                    IETF OAuth Selective Disclosure JWT Draft Specification
+                                </a>
+                                . The decoder automatically removes newlines from input, making it easy to copy examples directly from the specification.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // Wait for JOSE library to load
+        const waitForJose = setInterval(() => {
+            if (window.jose) {
+                clearInterval(waitForJose);
+                ReactDOM.render(<SDJWTDecoder />, document.getElementById('root'));
+            }
+        }, 100);
+
+        // Fallback timeout
+        setTimeout(() => {
+            clearInterval(waitForJose);
+            if (window.jose) {
+                ReactDOM.render(<SDJWTDecoder />, document.getElementById('root'));
+            } else {
+                document.getElementById('root').innerHTML = '<div class="p-8 text-center text-red-600">Error loading required libraries. Please refresh the page.</div>';
+            }
+        }, 5000);
+    </script>
+</body>
+</html>
