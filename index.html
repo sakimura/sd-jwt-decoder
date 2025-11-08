@@ -104,33 +104,49 @@
                 const digest = await crypto.subtle.digest("SHA-256", bytes);
                 return bytesToBase64Url(new Uint8Array(digest));
             };
-            
             const digestDisclosureB64Url = async (disclosureB64Url) => {
-                // Per SD-JWT spec, the digest is computed over the BASE64URL disclosure string bytes (UTF-8),
-                // not the decoded JSON bytes.
+                // Digest over UTF-8 of the BASE64URL disclosure string per SD-JWT spec
                 const bytes = new TextEncoder().encode(disclosureB64Url);
                 return sha256B64Url(bytes);
             };
-
+            // Recursively collect digest anchors from payload:
+            //  - any array under key "_sd"
+            //  - any object's "..." value
+            const collectAllDigests = (node, acc = []) => {
+                if (Array.isArray(node)) {
+                    for (const item of node) collectAllDigests(item, acc);
+                } else if (node && typeof node === "object") {
+                    for (const [k, v] of Object.entries(node)) {
+                        if (k === "_sd" && Array.isArray(v)) {
+                            for (const d of v) if (typeof d === "string") acc.push(d);
+                        } else if (k === "..." && typeof v === "string") {
+                            acc.push(v);
+                        }
+                        collectAllDigests(v, acc);
+                    }
+                }
+                return acc;
+            };
             const verifySdListAgainstDisclosures = async (payload, disclosureStrings) => {
                 const sdAlg = (payload?._sd_alg || "sha-256").toLowerCase();
                 if (sdAlg !== "sha-256") {
-                    return { ok: false, alg: sdAlg, reason: "Unsupported _sd_alg", matches: [], missing: [], extra: payload?._sd || [] };
+                    const allDigests = new Set(collectAllDigests(payload));
+                    return { ok: false, alg: sdAlg, reason: "Unsupported _sd_alg", matches: [], missing: [], extra: Array.from(allDigests) };
                 }
-                const sdList = Array.isArray(payload?._sd) ? payload._sd : [];
+                const allDigests = new Set(collectAllDigests(payload));
                 const computed = await Promise.all(
                     disclosureStrings.map(async (d) => ({ disclosure: d, digest: await digestDisclosureB64Url(d) }))
                 );
                 const matches = [];
                 const missing = [];
                 for (const c of computed) {
-                    if (sdList.includes(c.digest)) matches.push(c);
+                    if (allDigests.has(c.digest)) matches.push(c);
                     else missing.push(c);
                 }
                 const computedDigests = new Set(computed.map(c => c.digest));
-                const extra = sdList.filter(d => !computedDigests.has(d));
+                const extra = Array.from(allDigests).filter(d => !computedDigests.has(d));
                 const ok = missing.length === 0;
-                return { ok, alg: sdAlg, matches, missing, extra, totalSd: sdList.length, disclosed: computed.length };
+                return { ok, alg: sdAlg, matches, missing, extra, totalSd: allDigests.size, disclosed: computed.length };
             };
 
 
@@ -250,8 +266,8 @@
                     delete cleanedClaims._sd;
                     delete cleanedClaims._sd_alg;
 
-
-                    // Verify _sd digest list against disclosures (hash-binding)
+                    
+                    // Verify _sd digest list against disclosures (including nested anchors)
                     let sdVerification = null;
                     try {
                         const disclosureStrings = disclosures.map(d => d.raw);
@@ -259,7 +275,7 @@
                     } catch (e) {
                         sdVerification = { ok: false, error: e.message };
                     }
-                    setDecoded({
+setDecoded({
                         jwt: {
                             header,
                             payload,
@@ -311,7 +327,7 @@
             };
 
             // Store example with newlines as in the spec, will be cleaned when loaded
-            const exampleSDJWT = `eyJhbGciOiAiRVMyNTYiLCAidHlwIjogImV4YW1wbGUrc2Qtand0In0.eyJfc2QiOiBbIkNyUWU3UzVrcUJBSHQtbk1ZWGdjNmJkdDJTSDVhVFkxc1VfTS1QZ2tqUEkiLCAiSnpZakg0c3ZsaUgwUjNQeUVNZmVadTZKdDY5dTVxZWhabzdGN0VQWWxTRSIsICJQb3JGYnBLdVZ1Nnh5bUphZ3ZrRnNGWEFiUm9jMkpHbEFVQTJCQTRvN2NJIiwgIlRHZjRvTGJnd2Q1SlFhSHlLVlFaVTlVZEdFMHc1cnREc3JaemZVYW9tTG8iLCAiWFFfM2tQS3QxWHlYN0tBTmtxVlI2eVoyVmE1TnJQSXZQWWJ5TXZSS0JNTSIsICJYekZyendzY002R242Q0pEYzZ2Vks4QmtNbmZHOHZPU0tmcFBJWmRBZmRFIiwgImdiT3NJNEVkcTJ4Mkt3LXc1d1BFemFrb2I5aFYxY1JEMEFUTjNvUUw5Sk0iLCAianN1OXlWdWx3UVFsaEZsTV8zSmx6TWFTRnpnbGhRRzBEcGZheVF3TFVLNCJdLCAiaXNzIjogImh0dHBzOi8vaXNzdWVyLmV4YW1wbGUuY29tIiwgImlhdCI6IDE2ODMwMDAwMDAsICJleHAiOiAxODgzMDAwMDAwLCAic3ViIjogInVzZXJfNDIiLCAibmF0aW9uYWxpdGllcyI6IFt7Ii4uLiI6ICJwRm5kamtaX1ZDem15VGE2VWpsWm8zZGgta284YUlLUWM5RGxHemhhVllvIn0sIHsiLi4uIjogIjdDZjZKa1B1ZHJ5M2xjYndIZ2VaOGtoQXYxVTFPU2xlclAwVmtCSnJXWjAifV0sICJfc2RfYWxnIjogInNoYS0yNTYiLCAiY25mIjogeyJqd2siOiB7Imt0eSI6ICJFQyIsICJjcnYiOiAiUC0yNTYiLCAieCI6ICJUQ0FFUjE5WnZ1M09IRjRqNFc0dmZTVm9ISVAxSUxpbERsczd2Q2VHZW1jIiwgInkiOiAiWnhqaVdXYlpNUUdIVldLVlE0aGJTSWlyc1ZmdWVjQ0U2dDRqVDlGMkhaUSJ9fX0.MczwjBFGtzf-6WMT-hIvYbkb11NrV1WMO-jTijpMPNbswNzZ87wY2uHz-CXo6R04b7jYrpj9mNRAvVssXou1iw~WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImdpdmVuX25hbWUiLCAiSm9obiJd~WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgImZhbWlseV9uYW1lIiwgIkRvZSJd~WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgImVtYWlsIiwgImpvaG5kb2VAZXhhbXBsZS5jb20iXQ~WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgInBob25lX251bWJlciIsICIrMS0yMDItNTU1LTAxMDEiXQ~WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgInBob25lX251bWJlcl92ZXJpZmllZCIsIHRydWVd~WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImFkZHJlc3MiLCB7InN0cmVldF9hZGRyZXNzIjogIjEyMyBNYWluIFN0IiwgImxvY2FsaXR5IjogIkFueXRvd24iLCAicmVnaW9uIjogIkFueXN0YXRlIiwgImNvdW50cnkiOiAiVVMifV0~WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgImJpcnRoZGF0ZSIsICIxOTQwLTAxLTAxIl0~WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgInVwZGF0ZWRfYXQiLCAxNTcwMDAwMDAwXQ~WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgIlVTIl0~WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgIkRFIl0~`;
+            const exampleSDJWT = `eyJhbGciOiAiRVMyNTYiLCAidHlwIjogImV4YW1wbGUrc2Qtand0In0.eyJAY29udGV4dCI6IFsiaHR0cHM6Ly93d3cudzMub3JnLzIwMTgvY3JlZGVudGlhbHMvdjEiLCAiaHR0cHM6Ly93M2lkLm9yZy92YWNjaW5hdGlvbi92MSJdLCAidHlwZSI6IFsiVmVyaWZpYWJsZUNyZWRlbnRpYWwiLCAiVmFjY2luYXRpb25DZXJ0aWZpY2F0ZSJdLCAiaXNzdWVyIjogImh0dHBzOi8vZXhhbXBsZS5jb20vaXNzdWVyIiwgImlzc3VhbmNlRGF0ZSI6ICIyMDIzLTAyLTA5VDExOjAxOjU5WiIsICJleHBpcmF0aW9uRGF0ZSI6ICIyMDI4LTAyLTA4VDExOjAxOjU5WiIsICJuYW1lIjogIkNPVklELTE5IFZhY2NpbmF0aW9uIENlcnRpZmljYXRlIiwgImRlc2NyaXB0aW9uIjogIkNPVklELTE5IFZhY2NpbmF0aW9uIENlcnRpZmljYXRlIiwgImNyZWRlbnRpYWxTdWJqZWN0IjogeyJfc2QiOiBbIjFWX0stOGxEUThpRlhCRlhiWlk5ZWhxUjRIYWJXQ2k1VDB5Ykl6WlBld3ciLCAiSnpqTGd0UDI5ZFAtQjN0ZDEyUDY3NGdGbUsyenk4MUhNdEJnZjZDSk5XZyIsICJSMmZHYmZBMDdaX1lsa3FtTlp5bWExeHl5eDFYc3RJaVM2QjFZYmwySlo0IiwgIlRDbXpybDdLMmdldl9kdTdwY01JeXpSTEhwLVllZy1GbF9jeHRyVXZQeGciLCAiVjdrSkJMSzc4VG1WRE9tcmZKN1p1VVBIdUtfMmNjN3laUmE0cVYxdHh3TSIsICJiMGVVc3ZHUC1PRERkRm9ZNE5semxYYzN0RHNsV0p0Q0pGNzVOdzhPal9nIiwgInpKS19lU01YandNOGRYbU1aTG5JOEZHTTA4ekozX3ViR2VFTUotNVRCeTAiXSwgInZhY2NpbmUiOiB7Il9zZCI6IFsiMWNGNWhMd2toTU5JYXFmV0pyWEk3Tk1XZWRMLTlmNlkyUEE1MnlQalNaSSIsICJIaXk2V1d1ZUxENWJuMTYyOTh0UHY3R1hobWxkTURPVG5CaS1DWmJwaE5vIiwgIkxiMDI3cTY5MWpYWGwtakM3M3ZpOGViT2o5c214M0MtX29nN2dBNFRCUUUiXSwgInR5cGUiOiAiVmFjY2luZSJ9LCAicmVjaXBpZW50IjogeyJfc2QiOiBbIjFsU1FCTlkyNHEwVGg2T0d6dGhxLTctNGw2Y0FheHJZWE9HWnBlV19sbkEiLCAiM256THE4MU0yb04wNndkdjFzaEh2T0VKVnhaNUtMbWREa0hFREpBQldFSSIsICJQbjFzV2kwNkc0TEpybm4tX1JUMFJiTV9IVGR4blBKUXVYMmZ6V3ZfSk9VIiwgImxGOXV6ZHN3N0hwbEdMYzcxNFRyNFdPN01HSnphN3R0N1FGbGVDWDRJdHciXSwgInR5cGUiOiAiVmFjY2luZVJlY2lwaWVudCJ9LCAidHlwZSI6ICJWYWNjaW5hdGlvbkV2ZW50In0sICJfc2RfYWxnIjogInNoYS0yNTYiLCAiY25mIjogeyJqd2siOiB7Imt0eSI6ICJFQyIsICJjcnYiOiAiUC0yNTYiLCAieCI6ICJUQ0FFUjE5WnZ1M09IRjRqNFc0dmZTVm9ISVAxSUxpbERsczd2Q2VHZW1jIiwgInkiOiAiWnhqaVdXYlpNUUdIVldLVlE0aGJTSWlyc1ZmdWVjQ0U2dDRqVDlGMkhaUSJ9fX0.OZomvwO8iw4db89MYCeeomBVStXkT6u7G7FkicPWZnd2_hGgr0l_u1NHgPVocuOt-m32Uu6kwtPmYFxKk0AOeA~WyIyR0xDNDJzS1F2ZUNmR2ZyeU5STjl3IiwgImF0Y0NvZGUiLCAiSjA3QlgwMyJd~WyJlbHVWNU9nM2dTTklJOEVZbnN4QV9BIiwgIm1lZGljaW5hbFByb2R1Y3ROYW1lIiwgIkNPVklELTE5IFZhY2NpbmUgTW9kZXJuYSJd~WyI2SWo3dE0tYTVpVlBHYm9TNXRtdlZBIiwgIm1hcmtldGluZ0F1dGhvcml6YXRpb25Ib2xkZXIiLCAiTW9kZXJuYSBCaW90ZWNoIl0~WyJlSThaV205UW5LUHBOUGVOZW5IZGhRIiwgIm5leHRWYWNjaW5hdGlvbkRhdGUiLCAiMjAyMS0wOC0xNlQxMzo0MDoxMloiXQ~WyJRZ19PNjR6cUF4ZTQxMmExMDhpcm9BIiwgImNvdW50cnlPZlZhY2NpbmF0aW9uIiwgIkdFIl0~WyJBSngtMDk1VlBycFR0TjRRTU9xUk9BIiwgImRhdGVPZlZhY2NpbmF0aW9uIiwgIjIwMjEtMDYtMjNUMTM6NDA6MTJaIl0~WyJQYzMzSk0yTGNoY1VfbEhnZ3ZfdWZRIiwgIm9yZGVyIiwgIjMvMyJd~WyJHMDJOU3JRZmpGWFE3SW8wOXN5YWpBIiwgImdlbmRlciIsICJGZW1hbGUiXQ~WyJsa2x4RjVqTVlsR1RQVW92TU5JdkNBIiwgImJpcnRoRGF0ZSIsICIxOTYxLTA4LTE3Il0~WyJuUHVvUW5rUkZxM0JJZUFtN0FuWEZBIiwgImdpdmVuTmFtZSIsICJNYXJpb24iXQ~WyI1YlBzMUlxdVpOYTBoa2FGenp6Wk53IiwgImZhbWlseU5hbWUiLCAiTXVzdGVybWFubiJd~WyI1YTJXMF9OcmxFWnpmcW1rXzdQcS13IiwgImFkbWluaXN0ZXJpbmdDZW50cmUiLCAiUHJheGlzIFNvbW1lcmdhcnRlbiJd~WyJ5MXNWVTV3ZGZKYWhWZGd3UGdTN1JRIiwgImJhdGNoTnVtYmVyIiwgIjE2MjYzODI3MzYiXQ~WyJIYlE0WDhzclZXM1FEeG5JSmRxeU9BIiwgImhlYWx0aFByb2Zlc3Npb25hbCIsICI4ODMxMTAwMDAwMTUzNzYiXQ~`;
 
             const examplePublicKey = `{
   "kty": "EC",
@@ -527,7 +543,8 @@
                                     </div>
                                 )}
 
-                                
+                                <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg shadow-lg p-6 border-2 border-green-200">
+                                    
                                 {/* SD Digest Verification */}
                                 <div className="bg-white rounded-lg shadow-lg p-6">
                                     <div className="flex items-center gap-2 mb-3">
@@ -548,22 +565,22 @@
                                                     </p>
                                                     <p className={decoded.sdVerification.ok ? "mt-1 text-sm text-green-700" : "mt-1 text-sm text-red-700"}>
                                                         {decoded.sdVerification.ok
-                                                            ? "All provided disclosures are present in the payload’s _sd list."
-                                                            : "Some provided disclosures are NOT present in the payload’s _sd list."}
+                                                            ? "All provided disclosures are present in the payload’s _sd list (including nested anchors)."
+                                                            : "Some provided disclosures are NOT present in the payload’s _sd list (including nested anchors)."}
                                                     </p>
                                                     <div className="grid md:grid-cols-3 gap-4 mt-4 text-sm">
                                                         <div className="border rounded p-3">
                                                             <div className="font-medium mb-1">Summary</div>
                                                             <ul className="list-disc list-inside text-gray-700">
-                                                                <li>_sd entries in payload: {decoded.sdVerification.totalSd ?? "—"}</li>
+                                                                <li>Digest anchors in payload: {decoded.sdVerification.totalSd ?? "—"}</li>
                                                                 <li>Disclosures provided: {decoded.sdVerification.disclosed ?? "—"}</li>
                                                                 <li>Matched: {decoded.sdVerification.matches?.length ?? 0}</li>
                                                                 <li>Missing: {decoded.sdVerification.missing?.length ?? 0}</li>
-                                                                <li>Extra (undisclosed yet in _sd): {decoded.sdVerification.extra?.length ?? 0}</li>
+                                                                <li>Extra (in payload but undisclosed): {decoded.sdVerification.extra?.length ?? 0}</li>
                                                             </ul>
                                                         </div>
                                                         <div className="border rounded p-3">
-                                                            <div className="font-medium mb-1">Missing (not found in _sd)</div>
+                                                            <div className="font-medium mb-1">Missing (not found in payload)</div>
                                                             <ol className="space-y-1 text-gray-700">
                                                                 {decoded.sdVerification.missing?.length
                                                                     ? decoded.sdVerification.missing.map((m, i) => (
@@ -573,7 +590,7 @@
                                                             </ol>
                                                         </div>
                                                         <div className="border rounded p-3">
-                                                            <div className="font-medium mb-1">Extra (in _sd but undisclosed)</div>
+                                                            <div className="font-medium mb-1">Extra (anchors in payload)</div>
                                                             <ol className="space-y-1 text-gray-700">
                                                                 {decoded.sdVerification.extra?.length
                                                                     ? decoded.sdVerification.extra.map((d, i) => (
@@ -588,8 +605,7 @@
                                         </>
                                     )}
                                 </div>
-<div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg shadow-lg p-6 border-2 border-green-200">
-                                    <div className="flex items-center justify-between mb-4">
+<div className="flex items-center justify-between mb-4">
                                         <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
                                             <CheckCircle className="text-green-600" size={24} />
                                             Reconstructed Claims
