@@ -85,6 +85,54 @@
                     return atob(base64);
                 }
             };
+            // --- SD-JWT _sd digest verification helpers (sha-256) ---
+            const base64UrlToBytes = (b64url) => {
+                const pad = "=".repeat((4 - (b64url.length % 4)) % 4);
+                const b64 = (b64url.replace(/-/g, "+").replace(/_/g, "/") + pad);
+                const str = atob(b64);
+                const bytes = new Uint8Array(str.length);
+                for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+                return bytes;
+            };
+            const bytesToBase64Url = (bytes) => {
+                let bin = "";
+                bytes.forEach(b => bin += String.fromCharCode(b));
+                return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+            };
+            const sha256B64Url = async (bytes) => {
+                if (!crypto?.subtle) throw new Error("Web Crypto SubtleCrypto unavailable (use HTTPS or localhost).");
+                const digest = await crypto.subtle.digest("SHA-256", bytes);
+                return bytesToBase64Url(new Uint8Array(digest));
+            };
+            
+            const digestDisclosureB64Url = async (disclosureB64Url) => {
+                // Per SD-JWT spec, the digest is computed over the BASE64URL disclosure string bytes (UTF-8),
+                // not the decoded JSON bytes.
+                const bytes = new TextEncoder().encode(disclosureB64Url);
+                return sha256B64Url(bytes);
+            };
+
+            const verifySdListAgainstDisclosures = async (payload, disclosureStrings) => {
+                const sdAlg = (payload?._sd_alg || "sha-256").toLowerCase();
+                if (sdAlg !== "sha-256") {
+                    return { ok: false, alg: sdAlg, reason: "Unsupported _sd_alg", matches: [], missing: [], extra: payload?._sd || [] };
+                }
+                const sdList = Array.isArray(payload?._sd) ? payload._sd : [];
+                const computed = await Promise.all(
+                    disclosureStrings.map(async (d) => ({ disclosure: d, digest: await digestDisclosureB64Url(d) }))
+                );
+                const matches = [];
+                const missing = [];
+                for (const c of computed) {
+                    if (sdList.includes(c.digest)) matches.push(c);
+                    else missing.push(c);
+                }
+                const computedDigests = new Set(computed.map(c => c.digest));
+                const extra = sdList.filter(d => !computedDigests.has(d));
+                const ok = missing.length === 0;
+                return { ok, alg: sdAlg, matches, missing, extra, totalSd: sdList.length, disclosed: computed.length };
+            };
+
 
             const verifySignature = async (jwtString, publicKeyJwk) => {
                 try {
@@ -202,6 +250,15 @@
                     delete cleanedClaims._sd;
                     delete cleanedClaims._sd_alg;
 
+
+                    // Verify _sd digest list against disclosures (hash-binding)
+                    let sdVerification = null;
+                    try {
+                        const disclosureStrings = disclosures.map(d => d.raw);
+                        sdVerification = await verifySdListAgainstDisclosures(payload, disclosureStrings);
+                    } catch (e) {
+                        sdVerification = { ok: false, error: e.message };
+                    }
                     setDecoded({
                         jwt: {
                             header,
@@ -212,7 +269,8 @@
                         disclosures,
                         kbJwt,
                         reconstructedClaims: cleanedClaims,
-                        originalPayload: payload
+                        originalPayload: payload,
+                        sdVerification
                     });
 
                     // Perform verification if public key is provided
@@ -469,7 +527,68 @@
                                     </div>
                                 )}
 
-                                <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg shadow-lg p-6 border-2 border-green-200">
+                                
+                                {/* SD Digest Verification */}
+                                <div className="bg-white rounded-lg shadow-lg p-6">
+                                    <div className="flex items-center gap-2 mb-3">
+                                        <Shield className={decoded?.sdVerification?.ok ? "text-green-600" : "text-red-600"} size={22} />
+                                        <h2 className="text-lg font-semibold text-gray-800">SD Digest Verification</h2>
+                                    </div>
+                                    {!decoded?.sdVerification && (
+                                        <p className="text-sm text-gray-600">No verification run yet.</p>
+                                    )}
+                                    {decoded?.sdVerification && (
+                                        <>
+                                            {decoded.sdVerification.error ? (
+                                                <p className="text-sm text-red-600">Error: {decoded.sdVerification.error}</p>
+                                            ) : (
+                                                <>
+                                                    <p className="text-sm">
+                                                        <span className="font-medium">Algorithm:</span> {decoded.sdVerification.alg || "sha-256"}
+                                                    </p>
+                                                    <p className={decoded.sdVerification.ok ? "mt-1 text-sm text-green-700" : "mt-1 text-sm text-red-700"}>
+                                                        {decoded.sdVerification.ok
+                                                            ? "All provided disclosures are present in the payload’s _sd list."
+                                                            : "Some provided disclosures are NOT present in the payload’s _sd list."}
+                                                    </p>
+                                                    <div className="grid md:grid-cols-3 gap-4 mt-4 text-sm">
+                                                        <div className="border rounded p-3">
+                                                            <div className="font-medium mb-1">Summary</div>
+                                                            <ul className="list-disc list-inside text-gray-700">
+                                                                <li>_sd entries in payload: {decoded.sdVerification.totalSd ?? "—"}</li>
+                                                                <li>Disclosures provided: {decoded.sdVerification.disclosed ?? "—"}</li>
+                                                                <li>Matched: {decoded.sdVerification.matches?.length ?? 0}</li>
+                                                                <li>Missing: {decoded.sdVerification.missing?.length ?? 0}</li>
+                                                                <li>Extra (undisclosed yet in _sd): {decoded.sdVerification.extra?.length ?? 0}</li>
+                                                            </ul>
+                                                        </div>
+                                                        <div className="border rounded p-3">
+                                                            <div className="font-medium mb-1">Missing (not found in _sd)</div>
+                                                            <ol className="space-y-1 text-gray-700">
+                                                                {decoded.sdVerification.missing?.length
+                                                                    ? decoded.sdVerification.missing.map((m, i) => (
+                                                                        <li key={i} className="break-all font-mono">{m.digest}</li>
+                                                                    ))
+                                                                    : <li className="text-gray-500">None</li>}
+                                                            </ol>
+                                                        </div>
+                                                        <div className="border rounded p-3">
+                                                            <div className="font-medium mb-1">Extra (in _sd but undisclosed)</div>
+                                                            <ol className="space-y-1 text-gray-700">
+                                                                {decoded.sdVerification.extra?.length
+                                                                    ? decoded.sdVerification.extra.map((d, i) => (
+                                                                        <li key={i} className="break-all font-mono">{d}</li>
+                                                                    ))
+                                                                    : <li className="text-gray-500">None</li>}
+                                                            </ol>
+                                                        </div>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </>
+                                    )}
+                                </div>
+<div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg shadow-lg p-6 border-2 border-green-200">
                                     <div className="flex items-center justify-between mb-4">
                                         <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
                                             <CheckCircle className="text-green-600" size={24} />
