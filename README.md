@@ -1,6 +1,3 @@
-以下の内容でREADMEを書くと、技術的背景と使い方の両方を簡潔に伝えられます。  
-***
-
 # SD-JWT Decoder
 
 Single-page web tool for decoding and verifying SD-JWT tokens directly in your browser.
