@@ -140,7 +140,7 @@ Just serve `index.html` with typical static settings.
 
 ## 🗺️ Roadmap Ideas
 
-* Validate `_sd` digest list against disclosures (full SD-JWT verification per spec).
+* Validate `_sd` digest list against disclosures (full SD-JWT verification per spec) beyond sha-256
 * Support JWKS discovery (`kid`) and issuer metadata resolution.
 * Optional claims/time validation (iss/aud/exp/nbf).
 * UI: file import/export, JSON download of decoded artifacts.
