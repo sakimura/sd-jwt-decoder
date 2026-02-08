@@ -25,7 +25,7 @@ signature using a supplied public key (JWK), **entirely in the browser**.
 ## 🖥️ Project Structure
 
 The project is built as a small Vite application and outputs static assets for deployment.
-
+```bash
 .
 ├── index.html # Vite HTML entry
 ├── src/
@@ -36,7 +36,7 @@ The project is built as a small Vite application and outputs static assets for d
 ├── postcss.config.cjs
 ├── vite.config.js
 └── dist/ # Production build output (generated)
-
+```
 All dependencies are resolved at build time via npm.
 The production output (`dist/`) contains only static HTML/CSS/JS.
 
