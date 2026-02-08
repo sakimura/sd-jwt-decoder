@@ -1,6 +1,11 @@
 # SD-JWT Decoder with Verification
 
-A single-file, client-side tool to **decode** Selective Disclosure JWTs (SD-JWT) and optionally **verify the issuer signature** with a supplied public key (JWK). Built with React (UMD), Babel-in-the-browser, Tailwind via CDN, and JOSE (ESM) — all loaded from CDNs; **no build step required**. 
+This project is a **purely client-side SD-JWT inspection tool** built with **Vite + React + Tailwind CSS v4**.
+
+It decodes Selective Disclosure JWTs (SD-JWT) and can optionally verify the issuer
+signature using a supplied public key (JWK), **entirely in the browser**.
+
+**No runtime Babel, no CDN dependencies, and compatible with a strict Content Security Policy (CSP).**
 
 ---
 
@@ -17,52 +22,50 @@ A single-file, client-side tool to **decode** Selective Disclosure JWTs (SD-JWT)
 
 ---
 
-## 🖥️ Live Structure
+## 🖥️ Project Structure
 
-This repository consists of a single file:
+The project is built as a small Vite application and outputs static assets for deployment.
 
-```
-index.html
-```
+.
+├── index.html # Vite HTML entry
+├── src/
+│ ├── main.jsx # React bootstrap
+│ ├── App.jsx # SD-JWT decoder UI and logic
+│ └── index.css # Tailwind CSS entry
+├── tailwind.config.js
+├── postcss.config.cjs
+├── vite.config.js
+└── dist/ # Production build output (generated)
 
-It embeds:
-
-* React 18 (UMD) + ReactDOM 18 (UMD)
-* Babel standalone (transpiles the JSX in the browser)
-* Tailwind CSS via CDN
-* `jose@5.x` imported as an ESM module from a CDN
-* The full React app in a `<script type="text/babel">` block that renders into `#root`
+All dependencies are resolved at build time via npm.
+The production output (`dist/`) contains only static HTML/CSS/JS.
 
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Development)
 
-### Option A: Just open the file
+### Prerequisites
+- Node.js 18+ (recommended)
 
-1. Download `index.html`. 
-2. Open it in a modern browser (Chrome/Edge/Firefox/Safari).
-   *(Because all dependencies load from CDNs, file:// works in most environments. If your browser blocks module imports from a local file, use Option B.)*
-
-### Option B: Serve locally
-
-From the folder that contains `index.html`, run any static server, e.g.:
-
+### Install dependencies
 ```bash
-# Python 3
-python -m http.server 8080
-
-# Node (http-server)
-npx http-server -p 8080
+npm install
 ```
+### Run development server
+```bash
+npm run dev
+```
+Then open: 
+```bash
+http://localhost:5273/
+```
+### Production build
+```bash
+npm run build
+```
+The static output is generated in `dist/'. 
 
-Then visit `http://localhost:8080/`. 
-
-### Option C: Serve on Your Server
-
-Just copy the downloaded file to your web server and access it. (Useful when you want to test an SD-JWT on a mobile phone.) 
-
-**It is also available from https://www.sakimura.org/sd-jwt-decoder/ as well.**
 
 ---
 
@@ -105,18 +108,26 @@ Just copy the downloaded file to your web server and access it. (Useful when you
 * **KB-JWT**: Decoded and displayed when present; cryptographic binding validation beyond basic decode is **not** implemented. 
 * Intended as a **developer/educational tool**; please review and extend before using in security-critical workflows.
 
+### Content Security Policy
+
+The application is intentionally designed to run under a strict CSP.
+
+- No external scripts or styles
+- No inline script execution
+- No `unsafe-eval`
+
+This makes it suitable for deployment alongside security-sensitive sites.
+
+
 ---
 
 ## 🛠️ Development Notes
 
-* All logic lives inside `index.html` in a React component defined in a `<script type="text/babel">` block; Babel transpiles on the fly.
-* No `npm install` or bundler is necessary; dependencies load from CDNs:
-
-  * `react`, `react-dom` (UMD),
-  * `@babel/standalone`,
-  * `tailwindcss` CDN,
-  * `jose` (ESM). 
-* If you prefer a “no-Babel-at-runtime” setup, you can migrate the JSX into a Vite/webpack project and import `jose` via npm.
+- This project uses **Vite + React** with JSX compiled at build time.
+- There is **no runtime transpilation** (no `@babel/standalone`).
+- All JavaScript and CSS assets are self-hosted.
+- `jose` is imported as an npm dependency and bundled during build.
+- The application is compatible with **CSP without `unsafe-eval` or external script sources**.
 
 ---
 
@@ -126,16 +137,32 @@ Use the built-in **Load Example** button to populate the editor with an example 
 
 ---
 
+
 ## 📦 Deploy
 
-Because it’s a single static file, you can host it anywhere:
+This project builds to a fully static site.
 
-* GitHub Pages
-* Netlify / Vercel (static)
-* Any S3/CloudFront, Cloudflare Pages, or your own server
+Deploy the contents of `dist/` to any static hosting environment:
 
-Just serve `index.html` with typical static settings. 
+- Apache / nginx
+- GitHub Pages
+- Netlify / Vercel
+- S3 + CloudFront
+- Cloudflare Pages
 
+The application is designed to work with a **strict Content Security Policy** such as:
+
+```http
+Content-Security-Policy:
+  default-src 'self';
+  script-src 'self';
+  style-src 'self';
+  img-src 'self' data:;
+  connect-src 'self';
+  object-src 'none';
+  base-uri 'none';
+  frame-ancestors 'none'
+```
 ---
 
 ## 🗺️ Roadmap Ideas
@@ -160,5 +187,7 @@ Just serve `index.html` with typical static settings.
 MIT License.
 
 ---
-* **Primary file**: `index.html`
+* Build system: Vite
+* UI: React + Tailwind CSS v4
+* Crypto: jose
 * **Topics**: `sd-jwt`, `jwt`, `jose`, `selective-disclosure`, `verifiable-credentials`, `react`, `tailwind`, `security-tools`
