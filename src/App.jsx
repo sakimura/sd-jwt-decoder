@@ -66,14 +66,12 @@ function safeSetClaim(obj, key, value) {
             const [verifying, setVerifying] = useState(false);
 
             const base64UrlDecode = (str) => {
-                let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-                while (base64.length % 4) {
-                    base64 += '=';
-                }
+                // Decode via bytes + TextDecoder so non-ASCII (UTF-8) claim values survive
+                const text = new TextDecoder("utf-8").decode(base64UrlToBytes(str));
                 try {
-                    return JSON.parse(atob(base64));
+                    return JSON.parse(text);
                 } catch (e) {
-                    return atob(base64);
+                    return text;
                 }
             };
             // --- SD-JWT _sd digest verification helpers (sha-256) ---
@@ -118,15 +116,18 @@ function safeSetClaim(obj, key, value) {
                 }
                 return acc;
             };
-            const verifySdListAgainstDisclosures = async (payload, disclosureStrings) => {
+            const verifySdListAgainstDisclosures = async (payload, disclosures) => {
                 const sdAlg = (payload?._sd_alg || "sha-256").toLowerCase();
+                // Digest anchors live in the payload AND inside disclosure values
+                // (recursive disclosures per the SD-JWT spec), so collect from both.
+                const anchorList = collectAllDigests(payload);
+                for (const d of disclosures) collectAllDigests(d.decoded, anchorList);
+                const allDigests = new Set(anchorList);
                 if (sdAlg !== "sha-256") {
-                    const allDigests = new Set(collectAllDigests(payload));
-                    return { ok: false, alg: sdAlg, reason: "Unsupported _sd_alg", matches: [], missing: [], extra: Array.from(allDigests) };
+                    return { ok: false, alg: sdAlg, reason: "Unsupported _sd_alg", matches: [], missing: [], extra: Array.from(allDigests), duplicates: [] };
                 }
-                const allDigests = new Set(collectAllDigests(payload));
                 const computed = await Promise.all(
-                    disclosureStrings.map(async (d) => ({ disclosure: d, digest: await digestDisclosureB64Url(d) }))
+                    disclosures.map(async (d) => ({ disclosure: d.raw, digest: await digestDisclosureB64Url(d.raw) }))
                 );
                 const matches = [];
                 const missing = [];
@@ -136,20 +137,55 @@ function safeSetClaim(obj, key, value) {
                 }
                 const computedDigests = new Set(computed.map(c => c.digest));
                 const extra = Array.from(allDigests).filter(d => !computedDigests.has(d));
-                const ok = missing.length === 0;
-                return { ok, alg: sdAlg, matches, missing, extra, totalSd: allDigests.size, disclosed: computed.length };
+                // The spec requires rejecting an SD-JWT if any digest appears more than
+                // once among the anchors, or if two disclosures yield the same digest.
+                const dupAnchors = anchorList.filter((d, i) => anchorList.indexOf(d) !== i);
+                const digestCounts = new Map();
+                for (const c of computed) digestCounts.set(c.digest, (digestCounts.get(c.digest) || 0) + 1);
+                const dupDisclosures = Array.from(digestCounts).filter(([, n]) => n > 1).map(([d]) => d);
+                const duplicates = Array.from(new Set([...dupAnchors, ...dupDisclosures]));
+                const ok = missing.length === 0 && duplicates.length === 0;
+                return { ok, alg: sdAlg, matches, missing, extra, duplicates, totalSd: allDigests.size, disclosed: computed.length };
             };
 
+
+            // Allowed signature algorithms are derived from the *key*, never from the
+            // attacker-controlled JWT header, to prevent algorithm-confusion attacks.
+            const ASYMMETRIC_ALGS = new Set([
+                "ES256", "ES384", "ES512", "ES256K",
+                "RS256", "RS384", "RS512",
+                "PS256", "PS384", "PS512",
+                "EdDSA", "Ed25519", "Ed448"
+            ]);
+            const allowedAlgsForJwk = (jwk) => {
+                if (!jwk || typeof jwk !== "object") throw new Error("Public key must be a JWK object");
+                if (jwk.kty === "oct") throw new Error("Symmetric (oct) keys are not accepted for issuer signature verification");
+                if (jwk.alg) {
+                    if (!ASYMMETRIC_ALGS.has(jwk.alg)) throw new Error(`Key algorithm ${jwk.alg} is not an accepted asymmetric signature algorithm`);
+                    return [jwk.alg];
+                }
+                switch (jwk.kty) {
+                    case "EC":
+                        switch (jwk.crv) {
+                            case "P-256": return ["ES256"];
+                            case "P-384": return ["ES384"];
+                            case "P-521": return ["ES512"];
+                            case "secp256k1": return ["ES256K"];
+                            default: throw new Error(`Unsupported EC curve: ${jwk.crv}`);
+                        }
+                    case "OKP":
+                        return ["EdDSA"];
+                    case "RSA":
+                        return ["PS256", "PS384", "PS512", "RS256", "RS384", "RS512"];
+                    default:
+                        throw new Error(`Unsupported key type: ${jwk.kty}`);
+                }
+            };
 
             const verifySignature = async (jwtString, publicKeyJwk) => {
                 try {
                     setVerifying(true);
                     setVerificationStatus(null);
-                    // Parse the JWT header to get the algorithm
-                    const jwtParts = jwtString.split('.');
-                    const headerBase64 = jwtParts[0];
-                    const header = base64UrlDecode(headerBase64);
-                    const algorithm = header.alg;
 
                     // Parse the public key (remove any newlines first)
                     let jwk;
@@ -160,12 +196,18 @@ function safeSetClaim(obj, key, value) {
                         jwk = publicKeyJwk;
                     }
 
-                    // Import the public key
-                    const publicKey = await importJWK(jwk, algorithm);
+                    const allowedAlgs = allowedAlgsForJwk(jwk);
+                    const header = base64UrlDecode(jwtString.split('.')[0]);
+                    if (!header?.alg || !allowedAlgs.includes(header.alg)) {
+                        throw new Error(`JWT header alg "${header?.alg}" is not permitted for this key (allowed: ${allowedAlgs.join(', ')})`);
+                    }
 
-                    // Verify the JWT with explicit algorithm
+                    // Import the public key
+                    const publicKey = await importJWK(jwk, header.alg);
+
+                    // Verify the JWT against the key-derived algorithm allowlist
                     const { payload, protectedHeader } = await jwtVerify(jwtString, publicKey, {
-                        algorithms: [algorithm]
+                        algorithms: allowedAlgs
                     });
 
                     setVerificationStatus({
@@ -186,6 +228,51 @@ function safeSetClaim(obj, key, value) {
                 }
             };
 
+            // Verify the Key Binding JWT per the SD-JWT spec: typ must be "kb+jwt",
+            // sd_hash must be the _sd_alg digest over the presentation (issuer JWT +
+            // disclosures + trailing "~"), and the signature must verify with the
+            // holder key from the issuer payload's cnf.jwk.
+            const verifyKbJwt = async (kbJwtString, issuerPayload, presentation) => {
+                const result = { ok: false, typOk: null, sdHashOk: null, sigOk: null, alg: null, error: null, sigNote: null };
+                try {
+                    const [h, p] = kbJwtString.split('.');
+                    const header = base64UrlDecode(h);
+                    const kbPayload = base64UrlDecode(p);
+
+                    result.typOk = header?.typ === 'kb+jwt';
+
+                    const sdAlg = (issuerPayload?._sd_alg || 'sha-256').toLowerCase();
+                    if (sdAlg === 'sha-256') {
+                        const expected = await sha256B64Url(new TextEncoder().encode(presentation));
+                        result.expectedSdHash = expected;
+                        result.actualSdHash = kbPayload?.sd_hash ?? null;
+                        result.sdHashOk = kbPayload?.sd_hash === expected;
+                    } else {
+                        result.sdHashOk = false;
+                        result.sigNote = `Cannot check sd_hash: unsupported _sd_alg "${sdAlg}"`;
+                    }
+
+                    const cnfJwk = issuerPayload?.cnf?.jwk;
+                    if (!cnfJwk) {
+                        result.sigNote = 'Issuer payload has no cnf.jwk — holder signature cannot be verified';
+                    } else {
+                        const allowedAlgs = allowedAlgsForJwk(cnfJwk);
+                        if (!header?.alg || !allowedAlgs.includes(header.alg)) {
+                            throw new Error(`KB-JWT header alg "${header?.alg}" is not permitted for the cnf key (allowed: ${allowedAlgs.join(', ')})`);
+                        }
+                        const holderKey = await importJWK(cnfJwk, header.alg);
+                        await jwtVerify(kbJwtString, holderKey, { algorithms: allowedAlgs });
+                        result.sigOk = true;
+                        result.alg = header.alg;
+                    }
+                    result.ok = result.typOk === true && result.sdHashOk === true && result.sigOk === true;
+                } catch (e) {
+                    result.sigOk = result.sigOk === true ? true : false;
+                    result.error = e.message;
+                }
+                return result;
+            };
+
             const decodeSDJWT = async (sdJwt) => {
                 try {
                     setError('');
@@ -195,11 +282,6 @@ function safeSetClaim(obj, key, value) {
                     const cleanedSdJwt = sdJwt.replace(/[\r\n\s]/g, '');
                     
                     const parts = cleanedSdJwt.trim().split('~');
-                    
-                    if (parts.length < 1) {
-                        throw new Error('Invalid SD-JWT format');
-                    }
-
                     const jwtString = parts[0];
                     const jwtParts = jwtString.split('.');
                     if (jwtParts.length !== 3) {
@@ -217,9 +299,13 @@ function safeSetClaim(obj, key, value) {
                         const part = parts[i].trim();
                         if (!part) continue;
 
-                        if (part.includes('.') && part.split('.').length === 3) {
+                        // Per the SD-JWT spec, a Key Binding JWT can only be the last
+                        // element (disclosures are dot-free base64url, so a dotted
+                        // segment anywhere else is malformed rather than a KB-JWT).
+                        if (i === parts.length - 1 && part.split('.').length === 3) {
                             const kbParts = part.split('.');
                             kbJwt = {
+                                raw: part,
                                 header: base64UrlDecode(kbParts[0]),
                                 payload: base64UrlDecode(kbParts[1]),
                                 signature: kbParts[2]
@@ -237,9 +323,22 @@ function safeSetClaim(obj, key, value) {
                         }
                     }
 
+                    // Verify _sd digest list against disclosures (including nested anchors)
+                    // BEFORE reconstructing claims, so forged disclosures appended to a
+                    // signed SD-JWT are never merged into the reconstructed claim set.
+                    let sdVerification = null;
+                    let matchedDisclosures = new Set();
+                    try {
+                        sdVerification = await verifySdListAgainstDisclosures(payload, disclosures);
+                        matchedDisclosures = new Set((sdVerification.matches || []).map(m => m.disclosure));
+                    } catch (e) {
+                        sdVerification = { ok: false, error: e.message };
+                    }
+
                     const reconstructedClaims = JSON.parse(JSON.stringify(payload));
-                    
+
                     disclosures.forEach(disc => {
+                        if (!matchedDisclosures.has(disc.raw)) return; // digest-verified only
                         if (Array.isArray(disc.decoded) && disc.decoded.length >= 2) {
                             const [salt, claimName, claimValue] = disc.decoded;
                             if (claimName && claimValue !== undefined) {
@@ -252,14 +351,13 @@ function safeSetClaim(obj, key, value) {
                     delete cleanedClaims._sd;
                     delete cleanedClaims._sd_alg;
 
-                    
-                    // Verify _sd digest list against disclosures (including nested anchors)
-                    let sdVerification = null;
-                    try {
-                        const disclosureStrings = disclosures.map(d => d.raw);
-                        sdVerification = await verifySdListAgainstDisclosures(payload, disclosureStrings);
-                    } catch (e) {
-                        sdVerification = { ok: false, error: e.message };
+                    // Verify the KB-JWT (if present) against cnf.jwk and sd_hash.
+                    // The presentation the sd_hash covers is everything up to and
+                    // including the last "~" before the KB-JWT.
+                    let kbVerification = null;
+                    if (kbJwt) {
+                        const presentation = parts.slice(0, -1).join('~') + '~';
+                        kbVerification = await verifyKbJwt(kbJwt.raw, payload, presentation);
                     }
 setDecoded({
                         jwt: {
@@ -270,6 +368,7 @@ setDecoded({
                         jwtString,
                         disclosures,
                         kbJwt,
+                        kbVerification,
                         reconstructedClaims: cleanedClaims,
                         originalPayload: payload,
                         sdVerification
@@ -551,9 +650,16 @@ setDecoded({
                                                     </p>
                                                     <p className={decoded.sdVerification.ok ? "mt-1 text-sm text-green-700" : "mt-1 text-sm text-red-700"}>
                                                         {decoded.sdVerification.ok
-                                                            ? "All provided disclosures are present in the payload’s _sd list (including nested anchors)."
-                                                            : "Some provided disclosures are NOT present in the payload’s _sd list (including nested anchors)."}
+                                                            ? "All provided disclosures are present in the payload’s _sd list (including nested anchors), with no duplicate digests."
+                                                            : decoded.sdVerification.missing?.length
+                                                                ? "Some provided disclosures are NOT present in the payload’s _sd list (including nested anchors)."
+                                                                : "Duplicate digests detected — the SD-JWT spec requires rejecting this token."}
                                                     </p>
+                                                    {decoded.sdVerification.duplicates?.length > 0 && decoded.sdVerification.missing?.length > 0 && (
+                                                        <p className="mt-1 text-sm text-red-700">
+                                                            Duplicate digests were also detected — the SD-JWT spec requires rejecting this token.
+                                                        </p>
+                                                    )}
                                                     <div className="grid md:grid-cols-3 gap-4 mt-4 text-sm">
                                                         <div className="border rounded p-3">
                                                             <div className="font-medium mb-1">Summary</div>
@@ -563,6 +669,9 @@ setDecoded({
                                                                 <li>Matched: {decoded.sdVerification.matches?.length ?? 0}</li>
                                                                 <li>Missing: {decoded.sdVerification.missing?.length ?? 0}</li>
                                                                 <li>Extra (in payload but undisclosed): {decoded.sdVerification.extra?.length ?? 0}</li>
+                                                                <li className={decoded.sdVerification.duplicates?.length ? "text-red-700 font-medium" : undefined}>
+                                                                    Duplicate digests: {decoded.sdVerification.duplicates?.length ?? 0}
+                                                                </li>
                                                             </ul>
                                                         </div>
                                                         <div className="border rounded p-3">
@@ -586,6 +695,16 @@ setDecoded({
                                                             </ol>
                                                         </div>
                                                     </div>
+                                                    {decoded.sdVerification.duplicates?.length > 0 && (
+                                                        <div className="border border-red-300 rounded p-3 mt-4 text-sm">
+                                                            <div className="font-medium mb-1 text-red-800">Duplicate digests</div>
+                                                            <ol className="space-y-1 text-red-700">
+                                                                {decoded.sdVerification.duplicates.map((d, i) => (
+                                                                    <li key={i} className="break-all font-mono">{d}</li>
+                                                                ))}
+                                                            </ol>
+                                                        </div>
+                                                    )}
                                                 </>
                                             )}
                                         </>
@@ -605,7 +724,7 @@ setDecoded({
                                         </button>
                                     </div>
                                     <p className="text-sm text-gray-600 mb-3">
-                                        Complete claims with all disclosures applied
+                                        Claims with all digest-verified disclosures applied (disclosures that fail the _sd digest check are excluded — see SD Digest Verification above)
                                     </p>
                                     <pre className="bg-white p-4 rounded-lg overflow-x-auto text-sm border border-green-200">
                                         {JSON.stringify(decoded.reconstructedClaims, null, 2)}
@@ -614,9 +733,45 @@ setDecoded({
 
                                 {decoded.kbJwt && (
                                     <div className="bg-white rounded-lg shadow-lg p-6">
-                                        <h2 className="text-xl font-bold text-gray-800 mb-4">
+                                        <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                                            <Shield className={decoded.kbVerification?.ok ? "text-green-600" : "text-red-600"} size={22} />
                                             Key Binding JWT (KB-JWT)
                                         </h2>
+                                        {decoded.kbVerification && (
+                                            <div className={`mb-4 p-4 rounded-lg border-2 text-sm ${
+                                                decoded.kbVerification.ok ? "bg-green-50 border-green-300" : "bg-red-50 border-red-300"
+                                            }`}>
+                                                <p className={`font-bold ${decoded.kbVerification.ok ? "text-green-800" : "text-red-800"}`}>
+                                                    {decoded.kbVerification.ok ? "KB-JWT verification succeeded" : "KB-JWT verification failed"}
+                                                </p>
+                                                <ul className="mt-2 space-y-1 text-gray-800">
+                                                    <li>
+                                                        {decoded.kbVerification.typOk ? "✓" : "✗"} Header typ is "kb+jwt"
+                                                    </li>
+                                                    <li>
+                                                        {decoded.kbVerification.sdHashOk ? "✓" : "✗"} sd_hash matches the presented SD-JWT
+                                                        {decoded.kbVerification.sdHashOk === false && decoded.kbVerification.expectedSdHash && (
+                                                            <span className="block font-mono text-xs break-all text-red-700">
+                                                                expected {decoded.kbVerification.expectedSdHash}, got {String(decoded.kbVerification.actualSdHash)}
+                                                            </span>
+                                                        )}
+                                                    </li>
+                                                    <li>
+                                                        {decoded.kbVerification.sigOk ? "✓" : "✗"} Signature verifies with the holder key (cnf.jwk)
+                                                        {decoded.kbVerification.alg && <span> — algorithm {decoded.kbVerification.alg}</span>}
+                                                    </li>
+                                                </ul>
+                                                {decoded.kbVerification.sigNote && (
+                                                    <p className="mt-2 text-yellow-800">{decoded.kbVerification.sigNote}</p>
+                                                )}
+                                                {decoded.kbVerification.error && (
+                                                    <p className="mt-2 text-red-700">{decoded.kbVerification.error}</p>
+                                                )}
+                                                <p className="mt-2 text-xs text-gray-600">
+                                                    Note: cnf.jwk is taken from the issuer JWT payload — it is only trustworthy if the issuer signature verification above succeeded.
+                                                </p>
+                                            </div>
+                                        )}
                                         <div className="space-y-3">
                                             <div>
                                                 <h3 className="font-semibold text-gray-700 mb-2">Header</h3>

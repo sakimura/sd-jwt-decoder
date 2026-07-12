@@ -1,7 +1,7 @@
 {
   "name": "sd-jwt-decoder",
   "version": "1.0.0",
-  "description": "A single-file, client-side tool to **decode** Selective Disclosure JWTs (SD-JWT) and optionally **verify the issuer signature** with a supplied public key (JWK). Built with React (UMD), Babel-in-the-browser, Tailwind via CDN, and JOSE (ESM) — all loaded from CDNs; **no build step required**.",
+  "description": "A purely client-side tool to decode Selective Disclosure JWTs (SD-JWT), verify _sd digests and Key Binding JWTs, and optionally verify the issuer signature with a supplied public key (JWK). Built with Vite, React, Tailwind CSS v4, and jose; ships as a static site compatible with a strict CSP.",
   "main": "index.js",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "bugs": {
     "url": "https://github.com/sakimura/sd-jwt-decoder/issues"
