@@ -31,7 +31,9 @@ The project is built as a small Vite application and outputs static assets for d
 ├── index.html # Vite HTML entry
 ├── src/
 │ ├── main.jsx # React bootstrap
-│ ├── App.jsx # SD-JWT decoder UI and logic
+│ ├── App.jsx # SD-JWT decoder UI (React component)
+│ ├── sdjwt.js # SD-JWT parsing/verification logic (pure, unit-tested)
+│ ├── sdjwt.test.js # Vitest unit tests for sdjwt.js
 │ └── index.css # Tailwind CSS entry
 ├── tailwind.config.js
 ├── postcss.config.cjs
@@ -61,6 +63,15 @@ Then open:
 ```bash
 http://localhost:5173/
 ```
+### Run tests
+```bash
+npm test
+```
+Unit tests (Vitest) cover the SD-JWT logic in `src/sdjwt.js`: digest verification
+(including forged/duplicate/recursive disclosures), the key-derived algorithm
+allowlist, issuer signature verification, KB-JWT verification, parsing, and
+prototype-pollution guards.
+
 ### Production build
 ```bash
 npm run build

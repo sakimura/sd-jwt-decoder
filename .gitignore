@@ -1,0 +1,7 @@
+# Dependencies (reinstall with `npm install`; versions pinned by package-lock.json)
+node_modules/
+
+# OS cruft
+.DS_Store
+
+# Note: dist/ is intentionally tracked — the built site is deployed from it.
