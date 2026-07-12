@@ -30,17 +30,28 @@ export const base64UrlDecode = (str) => {
   }
 };
 
-// --- SD-JWT _sd digest verification (sha-256) ---
+// --- SD-JWT _sd digest verification ---
 
-export const sha256B64Url = async (bytes) => {
+// _sd_alg values supported for digest computation (IANA hash names → SubtleCrypto)
+export const HASH_ALGS = {
+  "sha-256": "SHA-256",
+  "sha-384": "SHA-384",
+  "sha-512": "SHA-512",
+};
+
+export const hashB64Url = async (sdAlg, bytes) => {
+  const subtleAlg = HASH_ALGS[sdAlg];
+  if (!subtleAlg) throw new Error(`Unsupported _sd_alg "${sdAlg}"`);
   if (!globalThis.crypto?.subtle) throw new Error("Web Crypto SubtleCrypto unavailable (use HTTPS or localhost).");
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest(subtleAlg, bytes);
   return bytesToBase64Url(new Uint8Array(digest));
 };
 
+export const sha256B64Url = (bytes) => hashB64Url("sha-256", bytes);
+
 // Digest over UTF-8 of the BASE64URL disclosure string per SD-JWT spec
-export const digestDisclosureB64Url = async (disclosureB64Url) =>
-  sha256B64Url(new TextEncoder().encode(disclosureB64Url));
+export const digestDisclosureB64Url = async (disclosureB64Url, sdAlg = "sha-256") =>
+  hashB64Url(sdAlg, new TextEncoder().encode(disclosureB64Url));
 
 // Recursively collect digest anchors:
 //  - any array under key "_sd"
@@ -68,11 +79,11 @@ export const verifySdListAgainstDisclosures = async (payload, disclosures) => {
   const anchorList = collectAllDigests(payload);
   for (const d of disclosures) collectAllDigests(d.decoded, anchorList);
   const allDigests = new Set(anchorList);
-  if (sdAlg !== "sha-256") {
+  if (!HASH_ALGS[sdAlg]) {
     return { ok: false, alg: sdAlg, reason: "Unsupported _sd_alg", matches: [], missing: [], extra: Array.from(allDigests), duplicates: [] };
   }
   const computed = await Promise.all(
-    disclosures.map(async (d) => ({ disclosure: d.raw, digest: await digestDisclosureB64Url(d.raw) }))
+    disclosures.map(async (d) => ({ disclosure: d.raw, digest: await digestDisclosureB64Url(d.raw, sdAlg) }))
   );
   const matches = [];
   const missing = [];
@@ -103,22 +114,53 @@ export function safeSetClaim(obj, key, value) {
   obj[key] = value;
 }
 
-// Applies only digest-verified disclosures (matchedRawSet) over the payload,
-// so forged disclosures appended to a signed SD-JWT are never merged.
-export const reconstructClaims = (payload, disclosures, matchedRawSet) => {
-  const claims = JSON.parse(JSON.stringify(payload));
-  disclosures.forEach((disc) => {
-    if (!matchedRawSet.has(disc.raw)) return;
-    if (Array.isArray(disc.decoded) && disc.decoded.length >= 2) {
-      const [, claimName, claimValue] = disc.decoded;
-      if (claimName && claimValue !== undefined) {
-        safeSetClaim(claims, claimName, claimValue);
+// Spec-compliant nested reconstruction: walks the payload, re-inserting each
+// digest-verified disclosure at its exact structural position — object `_sd`
+// digests become `name: value` members of that object, and array elements of
+// the form `{"...": digest}` are replaced by the disclosed value (or dropped
+// when undisclosed). Disclosed values are processed recursively, so recursive
+// disclosures unfold too. `matchedByDigest` maps digest → disclosure and must
+// contain only digest-verified disclosures, so forged disclosures appended to
+// a signed SD-JWT are never merged.
+export const reconstructClaims = (payload, matchedByDigest) => {
+  const processNode = (node) => {
+    if (Array.isArray(node)) {
+      const out = [];
+      for (const item of node) {
+        if (item && typeof item === "object" && !Array.isArray(item) && typeof item["..."] === "string") {
+          const disc = matchedByDigest.get(item["..."]);
+          // Array element disclosures are 2-element [salt, value]
+          if (disc && Array.isArray(disc.decoded) && disc.decoded.length === 2) {
+            out.push(processNode(disc.decoded[1]));
+          }
+          // undisclosed array elements are omitted, per spec
+        } else {
+          out.push(processNode(item));
+        }
       }
+      return out;
     }
-  });
-  delete claims._sd;
-  delete claims._sd_alg;
-  return claims;
+    if (node && typeof node === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(node)) {
+        if (k === "_sd" || k === "_sd_alg") continue;
+        safeSetClaim(out, k, processNode(v));
+      }
+      if (Array.isArray(node._sd)) {
+        for (const digest of node._sd) {
+          const disc = matchedByDigest.get(digest);
+          // Object property disclosures are 3-element [salt, name, value]
+          if (disc && Array.isArray(disc.decoded) && disc.decoded.length === 3) {
+            const [, claimName, claimValue] = disc.decoded;
+            safeSetClaim(out, claimName, processNode(claimValue));
+          }
+        }
+      }
+      return out;
+    }
+    return node;
+  };
+  return processNode(payload);
 };
 
 // --- parsing ---
@@ -227,8 +269,8 @@ export const verifyKbJwt = async (kbJwtString, issuerPayload, presentation) => {
     result.typOk = header?.typ === "kb+jwt";
 
     const sdAlg = (issuerPayload?._sd_alg || "sha-256").toLowerCase();
-    if (sdAlg === "sha-256") {
-      const expected = await sha256B64Url(new TextEncoder().encode(presentation));
+    if (HASH_ALGS[sdAlg]) {
+      const expected = await hashB64Url(sdAlg, new TextEncoder().encode(presentation));
       result.expectedSdHash = expected;
       result.actualSdHash = kbPayload?.sd_hash ?? null;
       result.sdHashOk = kbPayload?.sd_hash === expected;

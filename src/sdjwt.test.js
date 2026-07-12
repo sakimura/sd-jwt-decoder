@@ -133,26 +133,89 @@ describe("verifySdListAgainstDisclosures", () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/Unsupported _sd_alg/);
   });
+
+  it.each(["sha-384", "sha-512"])("supports _sd_alg %s", async (alg) => {
+    const raw = makeDisclosure(["salt", "name", "value"]);
+    const digest = await digestDisclosureB64Url(raw, alg);
+    const payload = { _sd: [digest], _sd_alg: alg };
+    const res = await verifySdListAgainstDisclosures(payload, [{ raw, decoded: ["salt", "name", "value"] }]);
+    expect(res.ok).toBe(true);
+    expect(res.alg).toBe(alg);
+    expect(res.matches).toHaveLength(1);
+  });
+
+  it("does not cross-match digests computed with a different alg", async () => {
+    const raw = makeDisclosure(["salt", "name", "value"]);
+    const sha256Digest = await digestDisclosureB64Url(raw, "sha-256");
+    const payload = { _sd: [sha256Digest], _sd_alg: "sha-512" };
+    const res = await verifySdListAgainstDisclosures(payload, [{ raw, decoded: ["salt", "name", "value"] }]);
+    expect(res.ok).toBe(false);
+    expect(res.missing).toHaveLength(1);
+  });
 });
 
 describe("reconstructClaims", () => {
+  const mapOf = (entries) => new Map(entries);
+
   it("applies only digest-matched disclosures and strips _sd/_sd_alg", () => {
-    const matched = { raw: "m", decoded: ["s1", "goodClaim", "yes"] };
-    const unmatched = { raw: "u", decoded: ["s2", "forgedClaim", "no"] };
-    const claims = reconstructClaims(
-      { iss: "x", _sd: ["digest"], _sd_alg: "sha-256" },
-      [matched, unmatched],
-      new Set(["m"])
-    );
+    const payload = { iss: "x", _sd: ["digGood", "digForged"], _sd_alg: "sha-256" };
+    // only the "good" disclosure is in the matched map
+    const claims = reconstructClaims(payload, mapOf([
+      ["digGood", { raw: "m", decoded: ["s1", "goodClaim", "yes"] }],
+    ]));
     expect(claims).toEqual({ iss: "x", goodClaim: "yes" });
   });
 
+  it("re-inserts disclosed claims at their nested position", () => {
+    const payload = {
+      iss: "x",
+      credentialSubject: { _sd: ["digName"], type: "Person" },
+    };
+    const claims = reconstructClaims(payload, mapOf([
+      ["digName", { raw: "d", decoded: ["s", "givenName", "Marion"] }],
+    ]));
+    expect(claims).toEqual({
+      iss: "x",
+      credentialSubject: { type: "Person", givenName: "Marion" },
+    });
+  });
+
+  it("resolves array element disclosures and drops undisclosed elements", () => {
+    const payload = {
+      nationalities: [{ "...": "digFR" }, "US", { "...": "digUndisclosed" }],
+    };
+    const claims = reconstructClaims(payload, mapOf([
+      ["digFR", { raw: "d", decoded: ["s", "FR"] }],
+    ]));
+    expect(claims).toEqual({ nationalities: ["FR", "US"] });
+  });
+
+  it("unfolds recursive disclosures (disclosed value containing _sd)", () => {
+    const payload = { _sd: ["digOuter"] };
+    const claims = reconstructClaims(payload, mapOf([
+      ["digOuter", { raw: "o", decoded: ["s1", "address", { _sd: ["digInner"], country: "DE" }] }],
+      ["digInner", { raw: "i", decoded: ["s2", "street", "Hauptstr. 1"] }],
+    ]));
+    expect(claims).toEqual({ address: { country: "DE", street: "Hauptstr. 1" } });
+  });
+
   it("refuses prototype-polluting claim names", () => {
-    const evil = { raw: "e", decoded: ["s", "__proto__", { polluted: true }] };
-    const claims = reconstructClaims({ iss: "x" }, [evil], new Set(["e"]));
+    const payload = { iss: "x", _sd: ["digEvil"] };
+    const claims = reconstructClaims(payload, mapOf([
+      ["digEvil", { raw: "e", decoded: ["s", "__proto__", { polluted: true }] }],
+    ]));
     expect(Object.prototype.polluted).toBeUndefined();
     expect({}.polluted).toBeUndefined();
     expect(Object.keys(claims)).toEqual(["iss"]);
+  });
+
+  it("ignores disclosures with the wrong shape for their position", () => {
+    const payload = { _sd: ["digTwo"], arr: [{ "...": "digThree" }] };
+    const claims = reconstructClaims(payload, mapOf([
+      ["digTwo", { raw: "a", decoded: ["salt", "value-only"] }],          // 2-element in object context
+      ["digThree", { raw: "b", decoded: ["salt", "name", "value"] }],     // 3-element in array context
+    ]));
+    expect(claims).toEqual({ arr: [] });
   });
 });
 

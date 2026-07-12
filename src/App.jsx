@@ -110,15 +110,18 @@ import {
                     // BEFORE reconstructing claims, so forged disclosures appended to a
                     // signed SD-JWT are never merged into the reconstructed claim set.
                     let sdVerification = null;
-                    let matchedDisclosures = new Set();
+                    const matchedByDigest = new Map();
                     try {
                         sdVerification = await verifySdListAgainstDisclosures(payload, disclosures);
-                        matchedDisclosures = new Set((sdVerification.matches || []).map(m => m.disclosure));
+                        for (const m of sdVerification.matches || []) {
+                            const disc = disclosures.find(d => d.raw === m.disclosure);
+                            if (disc) matchedByDigest.set(m.digest, disc);
+                        }
                     } catch (e) {
                         sdVerification = { ok: false, error: e.message };
                     }
 
-                    const cleanedClaims = reconstructClaims(payload, disclosures, matchedDisclosures);
+                    const cleanedClaims = reconstructClaims(payload, matchedByDigest);
 
                     // Verify the KB-JWT (if present) against cnf.jwk and sd_hash.
                     const kbVerification = kbJwt ? await verifyKbJwt(kbJwt.raw, payload, presentation) : null;

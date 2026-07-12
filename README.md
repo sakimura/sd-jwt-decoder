@@ -14,8 +14,8 @@ signature using a supplied public key (JWK), **entirely in the browser**.
 * Paste an **SD-JWT** in the common `JWT~disclosure~disclosure~...` format; newlines/whitespace are auto-cleaned. 
 * Instant **JWT header/payload** decode and pretty-print panels with one-click **Copy**. 
 * Parses and lists **disclosures**, showing raw Base64URL and decoded tuples `[salt, claimName, claimValue]`. 
-* **SD digest verification** (sha-256): recomputes each disclosure's digest and checks it against the payload's `_sd` anchors — including nested anchors and digests embedded in other disclosures (recursive disclosures). **Duplicate digests are detected and flagged as a spec violation.**
-* Builds **Reconstructed Claims** by applying **only digest-verified** disclosures over the original payload (excludes `_sd`, `_sd_alg`); disclosures that fail the digest check are listed but never merged. 
+* **SD digest verification** (sha-256 / sha-384 / sha-512 per `_sd_alg`): recomputes each disclosure's digest and checks it against the payload's `_sd` anchors — including nested anchors and digests embedded in other disclosures (recursive disclosures). **Duplicate digests are detected and flagged as a spec violation.**
+* Builds **Reconstructed Claims** spec-compliantly: **only digest-verified** disclosures are re-inserted **at their exact structural position** (nested `_sd` members, array `{"...": digest}` elements, recursive disclosures unfold); `_sd`/`_sd_alg` are stripped and disclosures that fail the digest check are listed but never merged. 
 * Optional **signature verification** using **JOSE** with a provided **public key (JWK)**; the permitted algorithms are **derived from the key** (never from the attacker-controlled JWT header) to prevent algorithm-confusion attacks. 
 * **Key Binding JWT (KB-JWT) verification** when present: checks `typ` is `kb+jwt`, recomputes and compares `sd_hash` over the presented SD-JWT, and verifies the holder signature against `cnf.jwk`. 
 * **Load Example** SD-JWT and **Load Example Key** buttons included for quick testing (from the IETF draft example). 
@@ -104,8 +104,8 @@ The static output is generated in `dist/`.
 
 * **Parsing**: Splits on `~` to separate the signed JWT from disclosures and an optional KB-JWT (only the **last** segment can be a KB-JWT, per spec); handles whitespace/newlines; decoding is UTF-8 safe. 
 * **Decoding**: Base64URL-decodes header/payload; disclosures are decoded and displayed; tuples are interpreted as `[salt, claimName, claimValue]`. 
-* **Digest verification**: Computes `SHA-256(base64url(disclosure))` for every disclosure and matches it against all digest anchors (`_sd` arrays and `"..."` values) found in the payload **and** inside other disclosures; reports matched / missing / extra / duplicate digests. 
-* **Reconstruction**: Starts from the original payload, applies `claimName=claimValue` **only for digest-verified disclosures** (with prototype-pollution guards), and removes `_sd` / `_sd_alg` for a clean view. 
+* **Digest verification**: Computes the `_sd_alg` digest (sha-256/384/512) over each base64url disclosure string and matches it against all digest anchors (`_sd` arrays and `"..."` values) found in the payload **and** inside other disclosures; reports matched / missing / extra / duplicate digests. 
+* **Reconstruction**: Walks the payload and re-inserts each **digest-verified** disclosure at its structural position — object `_sd` digests become object members, array `{"...": digest}` elements are replaced by the disclosed value (undisclosed ones are dropped), disclosed values are processed recursively, and `_sd` / `_sd_alg` are stripped (with prototype-pollution guards). 
 * **Signature verification**: Parses the provided JWK, derives the set of permitted algorithms from its `kty`/`crv`/`alg` (symmetric `oct` keys are rejected), requires the JWT header `alg` to be in that set, then verifies with JOSE restricted to that allowlist. 
 * **KB-JWT verification**: Checks the `kb+jwt` header type, recomputes `sd_hash` over the presentation (issuer JWT + disclosures + trailing `~`), and verifies the signature with the holder key from the issuer payload's `cnf.jwk` using the same key-derived algorithm allowlist. 
 * **UI**: Tailwind components and inline SVG icons; React state tracks decode/verify results and copy feedback. 
@@ -119,9 +119,8 @@ The static output is generated in `dist/`.
 
   * This tool **does not** fetch keys from JWKS endpoints and **does not** perform issuer/audience validations (JOSE's `exp`/`nbf` checks do apply when those claims are present).
 * **Algorithm handling**: The permitted algorithms are **derived from the supplied JWK** (`kty`/`crv`/`alg`), never from the JWT header, preventing algorithm-confusion / key-type-confusion attacks. Symmetric (`oct`) keys are rejected. 
-* **SD digest verification**: `_sd` hash binding **is** recomputed and validated (sha-256 only; other `_sd_alg` values are reported as unsupported). Duplicate digests fail verification, as required by the spec. Only digest-verified disclosures are merged into "Reconstructed Claims" — forged disclosures appended to a signed SD-JWT are flagged and excluded. 
+* **SD digest verification**: `_sd` hash binding **is** recomputed and validated (sha-256, sha-384, sha-512; other `_sd_alg` values are reported as unsupported). Duplicate digests fail verification, as required by the spec. Only digest-verified disclosures are merged into "Reconstructed Claims" — forged disclosures appended to a signed SD-JWT are flagged and excluded. 
 * **KB-JWT**: `typ`, `sd_hash` binding, and the holder signature (via `cnf.jwk`) **are** verified. Note that `cnf.jwk` is read from the issuer JWT payload, so the KB-JWT result is only meaningful if the **issuer signature verification also succeeded**. `aud`/`nonce` freshness is **not** checked (the tool has no verifier context). 
-* **Reconstruction is flat**: Disclosed claims are applied at the top level for inspection; nested claims are not re-inserted at their exact structural position as a spec-compliant verifier would. 
 * Intended as a **developer/educational tool**; please review and extend before using in security-critical workflows.
 
 ### Content Security Policy
@@ -222,8 +221,6 @@ file, response-header policies, etc.).
 
 ## 🗺️ Roadmap Ideas
 
-* Support `_sd_alg` values beyond sha-256 (sha-384/sha-512).
-* Spec-compliant nested reconstruction (re-insert disclosed claims at their exact structural position).
 * Support JWKS discovery (`kid`) and issuer metadata resolution.
 * Optional claims validation (iss/aud) and KB-JWT `aud`/`nonce` checks.
 * UI: file import/export, JSON download of decoded artifacts.
